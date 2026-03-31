@@ -130,24 +130,29 @@ static __global__ void __launch_bounds__(CUDA_CONCAT_BLOCK_SIZE)
     const int64_t i2 = blockIdx.y;
     const int64_t i1 = blockIdx.x;
 
+    // Hoist loop-invariant offset computations
+    const uint64_t base0 = (uint64_t)(i3)*nb03 + (uint64_t)(i2)*nb02 + (uint64_t)(i1)*nb01;
+    const uint64_t base1 = (uint64_t)(i3)*nb13 + (uint64_t)(i2)*nb12 + (uint64_t)(i1)*nb11;
+    const uint64_t baseD = (uint64_t)(i3)*nb3  + (uint64_t)(i2)*nb2  + (uint64_t)(i1)*nb1;
+
     const float * x;
 
     for (int64_t i0 = threadIdx.x; i0 < ne0; i0 += blockDim.x) {
         if (i0 < ne00 && i1 < ne01 && i2 < ne02 && i3 < ne03) {
-            x = (const float *)(src0 + (i3       )*nb03 + (i2       )*nb02 + (i1       )*nb01 + (i0       )*nb00);
+            x = (const float *)(src0 + base0 + (uint64_t)(i0)*nb00);
         } else {
             if constexpr (dim == 0) {
-                x = (const float *) (src1 + i3 * nb13 + i2 * nb12 + i1 * nb11 + (i0 - ne00) * nb10);
+                x = (const float *) (src1 + base1 + (uint64_t)(i0 - ne00)*nb10);
             } else if constexpr (dim == 1) {
-                x = (const float *) (src1 + i3 * nb13 + i2 * nb12 + (i1 - ne01) * nb11 + i0 * nb10);
+                x = (const float *) (src1 + base1 + (uint64_t)(i1 - ne01)*nb11 + (uint64_t)(i0)*nb10);
             } else if constexpr (dim == 2) {
-                x = (const float *) (src1 + i3 * nb13 + (i2 - ne02) * nb12 + i1 * nb11 + i0 * nb10);
+                x = (const float *) (src1 + base1 + (uint64_t)(i2 - ne02)*nb12 + (uint64_t)(i1)*nb11 + (uint64_t)(i0)*nb10);
             } else if constexpr (dim == 3) {
-                x = (const float *) (src1 + (i3 - ne03) * nb13 + i2 * nb12 + i1 * nb11 + i0 * nb10);
+                x = (const float *) (src1 + base1 + (uint64_t)(i3 - ne03)*nb13 + (uint64_t)(i2)*nb12 + (uint64_t)(i1)*nb11 + (uint64_t)(i0)*nb10);
             }
         }
 
-        float * y = (float *)(dst + i3*nb3 + i2*nb2 + i1*nb1 + i0*nb0);
+        float * y = (float *)(dst + baseD + (uint64_t)(i0)*nb0);
 
         *y = *x;
     }

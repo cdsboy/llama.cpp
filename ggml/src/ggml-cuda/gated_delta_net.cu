@@ -76,7 +76,11 @@ gated_delta_net_cuda(const float * q,
         }
 
         if constexpr (!KDA) {
+#if defined(GGML_USE_HIP) && defined(RDNA3)
+            const float g_val = __expf(*g_t);
+#else
             const float g_val = expf(*g_t);
+#endif
 
             // kv[col] = (S^T @ k)[col] = sum_i S[i][col] * k[i]
             float kv_shard = 0.0f;
@@ -109,7 +113,11 @@ gated_delta_net_cuda(const float * q,
 #pragma unroll
             for (int r = 0; r < rows_per_lane; r++) {
                 const int i = r * warp_size + lane;
+#if defined(GGML_USE_HIP) && defined(RDNA3)
+                kv_shard += __expf(g_t[i]) * s_shard[r] * k_reg[r];
+#else
                 kv_shard += expf(g_t[i]) * s_shard[r] * k_reg[r];
+#endif
             }
 
             float kv_col = warp_reduce_sum<warp_size>(kv_shard);
@@ -123,7 +131,12 @@ gated_delta_net_cuda(const float * q,
 #pragma unroll
             for (int r = 0; r < rows_per_lane; r++) {
                 const int i = r * warp_size + lane;
-                s_shard[r]  = expf(g_t[i]) * s_shard[r] + k_reg[r] * delta_col;
+#if defined(GGML_USE_HIP) && defined(RDNA3)
+                const float g_val_i = __expf(g_t[i]);
+#else
+                const float g_val_i = expf(g_t[i]);
+#endif
+                s_shard[r]  = g_val_i * s_shard[r] + k_reg[r] * delta_col;
                 attn_partial += s_shard[r] * q_reg[r];
             }
 

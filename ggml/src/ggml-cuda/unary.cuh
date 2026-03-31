@@ -92,7 +92,11 @@ void ggml_cuda_op_xielu(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 void ggml_cuda_op_unary_mul(ggml_backend_cuda_context & ctx, ggml_tensor * unary_node, ggml_tensor * mul_node);
 
 __device__ __forceinline__ float ggml_cuda_op_silu_single(float x) {
+#if defined(GGML_USE_HIP) && defined(RDNA3)
+    return x / (1.0f + __expf(-x));
+#else
     return x / (1.0f + expf(-x));
+#endif
 }
 
 __device__ __forceinline__ float ggml_cuda_op_gelu_single(float x) {
