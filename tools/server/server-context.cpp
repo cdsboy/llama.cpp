@@ -649,7 +649,7 @@ private:
             return slot;
         }
 
-        void batch_add_token(const llama_token token, bool logits) override {
+        void batch_add_token(llama_token token, bool logits) override {
             server_slot * slot = get_slot();
             slot->i_batch_dft.push_back(ctx_impl.batch.n_tokens);
             common_batch_add(ctx_impl.batch, token, slot->prompt.tokens.pos_next(), { slot_id }, logits);
@@ -676,8 +676,7 @@ private:
             const auto pos_min = llama_memory_seq_pos_min(llama_get_memory(ctx_impl.ctx), slot_id);
             const auto pos_max = llama_memory_seq_pos_max(llama_get_memory(ctx_impl.ctx), slot_id);
             const auto n_tokens_cur = 0; // TODO was ctx_impl.batch.n_tokens; The draft model doesn't change the prompt?
-            const auto & cur_with_size = ctx_impl.get_checkpoint(*slot, n_tokens_cur, pos_min, pos_max);
-            auto & cur = cur_with_size.checkpoint;
+            const auto cur = ctx_impl.get_checkpoint(*slot, n_tokens_cur, pos_min, pos_max);
 
             SLT_DBG(*slot, "created context checkpoint %zu of %d (pos_min = %d, pos_max = %d, size = %.3f MiB)\n",
                     slot->prompt.checkpoints.size(), ctx_impl.params_base.n_ctx_checkpoints,
@@ -689,7 +688,7 @@ private:
             // save sampler (we may want to restore the RNG in the sampler after refusal of a draft)
             slot->spec_saved_sampler = common_sampler_clone(slot->smpl.get());
 
-            return cur_with_size.size;
+            return cur.size();
         }
 
         size_t restore_checkpoint(size_t ckpt_size_part_expected) override {
@@ -721,9 +720,7 @@ private:
             server_slot * slot = get_slot();
             slot->prompt.checkpoints.pop_back();
         }
-
     };
-
 
     // load the model and initialize llama_context
     // this may also be called to resume from sleeping state
@@ -860,9 +857,14 @@ private:
 
         slots.clear();
 
-        const bool can_spec = common_speculative_is_compat(ctx);
-        if (!can_spec) {
-            SRV_WRN("%s", "speculative decoding not supported by this context without checkpoints\n");
+        const auto spec_type = common_speculative_is_compat(ctx);
+        if (spec_type == COMMON_SPECULATIVE_COMPAT_TYPE_NO) {
+            SRV_WRN("%s", "speculative decoding not supported by this context\n");
+        }
+
+        if (spec_type == COMMON_SPECULATIVE_COMPAT_TYPE_CKPT) {
+            SRV_WRN("%s", "speculative decoding will use checkpoints\n");
+            params_base.speculative.use_checkpoints = true;
         }
 
         // initialize slots
@@ -881,7 +883,7 @@ private:
             slot.prompt.tokens.has_mtmd = mctx != nullptr;
 
             // try speculative decoding
-            if (can_spec || params_base.speculative.use_checkpoints) {
+            if (spec_type != COMMON_SPECULATIVE_COMPAT_TYPE_NO) {
                 if (mctx) {
                     SRV_ERR("%s\n", "speculative decoding is not supported with multimodal");
                     return false;
@@ -1781,15 +1783,10 @@ private:
         return true;
     }
 
-    struct server_prompt_checkpoint_with_size {
-        server_prompt_checkpoint checkpoint;
-        size_t size;
-    };
-
     // Creates a checkpoint.
     //
     // n_tokens_cur: the number of tokens added to the batch for the current slot
-    server_prompt_checkpoint_with_size get_checkpoint(server_slot & slot, const int64_t n_tokens_cur,
+    server_prompt_checkpoint get_checkpoint(server_slot & slot, const int64_t n_tokens_cur,
             llama_pos pos_min, llama_pos pos_max) {
         while (slot.prompt.checkpoints.size() >= (size_t) params_base.n_ctx_checkpoints) {
             // make room for the new checkpoint, if needed
@@ -1815,7 +1812,7 @@ private:
             GGML_ABORT("checkpoint size mismatch: expected %zu, got %zu\n", checkpoint_size, n);
         }
 
-        return server_prompt_checkpoint_with_size{ cur, checkpoint_size };
+        return cur;
     }
 
     void process_single_task(server_task && task) {
@@ -2611,7 +2608,7 @@ private:
                     bool has_mtmd = false;
 
                     // check if we should process the image
-                    if (slot.prompt.n_tokens() < slot.task->n_tokens() && input_tokens[slot.prompt.n_tokens()] == LLAMA_TOKEN_NULL) {
+                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && input_tokens[slot.prompt.n_tokens()] == LLAMA_TOKEN_NULL) {
                         // process the image
                         size_t n_tokens_out = 0;
                         int32_t res = input_tokens.process_chunk(ctx, mctx, slot.prompt.n_tokens(), slot.prompt.tokens.pos_next(), slot.id, n_tokens_out);
@@ -2739,8 +2736,7 @@ private:
                     // note: we create the checkpoint before calling llama_decode(), so the current batch is not
                     //       yet processed and therefore it is not part of the checkpoint.
                     if (do_checkpoint) {
-                        auto cur_with_size = get_checkpoint(slot, n_tokens_cur, pos_min, pos_max);
-                        auto & cur = cur_with_size.checkpoint;
+                        const auto cur = get_checkpoint(slot, n_tokens_cur, pos_min, pos_max);
                         SLT_WRN(slot,
                                 "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64
                                 ", size = %.3f MiB)\n",
@@ -3130,6 +3126,9 @@ struct server_res_generator : server_http_res {
     }
 };
 
+void server_context::on_sleeping_changed(std::function<void(bool)> callback) {
+    impl->queue_tasks.on_sleeping_state(std::move(callback));
+}
 
 
 //

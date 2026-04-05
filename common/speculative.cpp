@@ -13,6 +13,7 @@
 #include <cstring>
 #include <iomanip>
 #include <map>
+#include <cinttypes>
 
 #define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  128
 #define SPEC_VOCAB_CHECK_START_TOKEN_ID 5
@@ -240,9 +241,8 @@ struct common_speculative_state_draft : public common_speculative_state {
     void begin(const llama_tokens & prompt) override {
         if (use_checkpoint && ckpt.size() > 0) {
             // delete checkpoint
-            LOG_DBG("%s: delete checkpoint, prompt.size=%zu, pos_min=%d, pos_max=%d, n_tokens=%zu, size=%.3f MiB\n",
-                    __func__, prompt.size(),
-                    ckpt.pos_min, ckpt.pos_max, ckpt.n_tokens, (float) ckpt.data.size() / 1024 / 1024);
+            LOG_DBG("%s: delete checkpoint, prompt.size=%zu, pos_min=%d, pos_max=%d, n_tokens=%" PRId64 ", size=%.3f MiB\n",
+                    __func__, prompt.size(), ckpt.pos_min, ckpt.pos_max, ckpt.n_tokens, (float) ckpt.data.size() / 1024 / 1024);
             ckpt.pos_min   = 0;
             ckpt.pos_max   = 0;
             ckpt.n_tokens  = 0;
@@ -910,13 +910,13 @@ enum common_speculative_type common_speculative_type_from_name(const std::string
     return it->second;
 }
 
-bool common_speculative_is_compat(llama_context * ctx_tgt) {
+common_speculative_compat_type common_speculative_is_compat(llama_context * ctx_tgt) {
     auto * mem = llama_get_memory(ctx_tgt);
     if (mem == nullptr) {
-        return false;
+        return COMMON_SPECULATIVE_COMPAT_TYPE_NO;
     }
 
-    bool res = true;
+    common_speculative_compat_type res = COMMON_SPECULATIVE_COMPAT_TYPE_FULL;
 
     llama_memory_clear(mem, true);
 
@@ -928,14 +928,14 @@ bool common_speculative_is_compat(llama_context * ctx_tgt) {
     int ret = llama_decode(ctx_tgt, llama_batch_get_one(tmp.data(), tmp.size()));
     if (ret != 0) {
         LOG_ERR("%s: llama_decode() failed: %d\n", __func__, ret);
-        res = false;
+        res = COMMON_SPECULATIVE_COMPAT_TYPE_NO;
         goto done;
     }
 
     // try to remove the last tokens
     if (!llama_memory_seq_rm(mem, 0, 1, -1)) {
         LOG_WRN("%s: the target context does not support partial sequence removal\n", __func__);
-        res = false;
+        res = COMMON_SPECULATIVE_COMPAT_TYPE_CKPT;
         goto done;
     }
 
@@ -1262,7 +1262,6 @@ struct common_speculative_session::impl {
             if (draft.empty()) {
                 // switch to non-draft inference
                 LOG_DBG("%s: draft of length 0 after denied checkpoint\n", __func__);
-                clear_draft();
                 return draft;
             }
             // we use the shortened draft of previous speculation
@@ -1375,7 +1374,7 @@ struct common_speculative_session::impl {
         return common_speculative_accept_response{std::move(ids), n_draft, false};
     }
 
-    void rewind(const llama_pos p0) {
+    void rewind(llama_pos p0) {
         spec_ckpt_n_denials = 0;
         if (spec_has_ckpt) {
             // Delete Checkpoint

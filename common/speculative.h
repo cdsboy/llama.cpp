@@ -23,9 +23,15 @@ enum common_speculative_type common_speculative_type_from_name(const std::string
 // convert type to string
 std::string common_speculative_type_to_str(enum common_speculative_type type);
 
+enum common_speculative_compat_type {
+    COMMON_SPECULATIVE_COMPAT_TYPE_NO   = 0,
+    COMMON_SPECULATIVE_COMPAT_TYPE_FULL = 1,
+    COMMON_SPECULATIVE_COMPAT_TYPE_CKPT = 2,
+};
+
 // check if the llama_context is compatible for speculative decoding
 // note: clears the memory of the context
-bool common_speculative_is_compat(llama_context * ctx_tgt);
+common_speculative_compat_type common_speculative_is_compat(llama_context * ctx_tgt);
 
 common_speculative * common_speculative_init(
         common_params_speculative & params,
@@ -59,7 +65,7 @@ struct common_speculative_callback {
     virtual ~common_speculative_callback();
 
     // Add a token to the draft sequence.
-    virtual void batch_add_token(const llama_token token, bool logits) = 0;
+    virtual void batch_add_token(llama_token token, bool logits) = 0;
 
     // Sample and accept tokens from the main model.
     virtual llama_tokens sampler_sample_and_accept_n(const llama_tokens & drafted) = 0;
@@ -119,7 +125,7 @@ struct common_speculative_session {
     common_speculative_accept_response sample_and_accept();
 
     // rewind (because of a draft not fully accepted)
-    void rewind(const llama_pos p0);
+    void rewind(llama_pos p0);
 
     // print statistics
     void print_stats() const;
