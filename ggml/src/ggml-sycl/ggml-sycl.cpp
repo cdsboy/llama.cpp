@@ -54,7 +54,12 @@
 #include "ggml-sycl/set.hpp"
 #include "ggml-sycl/ssm_conv.hpp"
 #include "ggml-sycl/sycl_hw.hpp"
-
+#include "ggml-sycl/ssm_scan.hpp"
+#include "ggml-sycl/fill.hpp"
+#include "ggml-sycl/cumsum.hpp"
+#include "ggml-sycl/diag.hpp"
+#include "ggml-sycl/solve_tri.hpp"
+#include "ggml-sycl/gated_delta_net.hpp"
 
 static bool g_sycl_loaded = false;
 int g_ggml_sycl_debug = 0;
@@ -4394,6 +4399,21 @@ static bool ggml_sycl_compute_forward(ggml_backend_sycl_context & ctx, struct gg
         case GGML_OP_SSM_CONV:
             ggml_sycl_ssm_conv(ctx, dst);
             break;
+        case GGML_OP_SSM_SCAN:
+            ggml_sycl_ssm_scan(ctx, dst);
+            break;
+        case GGML_OP_FILL:
+            ggml_sycl_fill(ctx, dst);
+            break;
+        case GGML_OP_CUMSUM:
+            ggml_sycl_cumsum(ctx, dst);
+            break;
+        case GGML_OP_DIAG:
+            ggml_sycl_diag(ctx, dst);
+            break;
+        case GGML_OP_SOLVE_TRI:
+            ggml_sycl_solve_tri(ctx, dst);
+            break;
         case GGML_OP_ROLL:
             ggml_sycl_roll(ctx, dst);
             break;
@@ -5084,11 +5104,10 @@ static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_ACC:
             return ggml_is_contiguous(op->src[0]) && ggml_is_contiguous(op->src[1]);
         case GGML_OP_PAD:
-            // TODO: add circular padding support for syscl, see https://github.com/ggml-org/llama.cpp/pull/16985
             if (ggml_get_op_params_i32(op, 8) != 0) {
                 return false;
             }
-            return ggml_is_contiguous(op->src[0]);
+            return true;
         case GGML_OP_LEAKY_RELU:
         case GGML_OP_TIMESTEP_EMBEDDING:
         case GGML_OP_RWKV_WKV6:
@@ -5104,6 +5123,21 @@ static bool ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, const g
             return op->type == GGML_TYPE_F32;
         case GGML_OP_ARANGE:
             return op->type == GGML_TYPE_F32;
+        case GGML_OP_SSM_SCAN:
+            if (op->src[3]->ne[0] == 1) {
+                // Mamba2
+                // (kernel only supports (d_state == 128 || d_state == 256) && d_head % WARP_SIZE == 0)
+                return (op->src[0]->ne[0] == 128 || op->src[0]->ne[0] == 256) && op->src[0]->ne[1] % WARP_SIZE == 0;
+            } else {
+                // TODO Mamba-1 not yet ported to SYCL
+                return false;
+            }
+        case GGML_OP_FILL:
+        case GGML_OP_CUMSUM:
+        case GGML_OP_DIAG:
+            return true;
+        case GGML_OP_SOLVE_TRI:
+            return op->src[0]->ne[0] <= SYCL_SOLVE_TRI_MAX_N && op->src[1]->ne[0] <= SYCL_SOLVE_TRI_MAX_K;
         case GGML_OP_FLASH_ATTN_EXT:
             return ggml_sycl_flash_attn_ext_supported(device, op);
         default:
